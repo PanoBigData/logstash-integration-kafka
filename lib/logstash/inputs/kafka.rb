@@ -9,6 +9,7 @@ require "json"
 require "logstash/json"
 require_relative '../plugin_mixins/common'
 require 'logstash/plugin_mixins/deprecation_logger_support'
+require "logstash/timestamp"
 
 # This input will read events from a Kafka topic. It uses the 0.10 version of
 # the consumer API provided by Kafka to read messages from the broker.
@@ -247,6 +248,12 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
   # silently skip it.
   config :decorate_events, :validate => %w(none basic extended false true), :default => "none"
 
+  # A list of record headers to convert to field.
+  config :record_headers, :validate => :hash, :default => {"@t_kmi" => "integer"}
+
+  # Option to add receive timestamp as field
+  config :record_timestamp, :validate => :boolean, :default => true
+
   attr_reader :metadata_mode
 
   public
@@ -340,9 +347,29 @@ class LogStash::Inputs::Kafka < LogStash::Inputs::Base
 
   def handle_record(record, codec_instance, queue)
     codec_instance.decode(record.value.to_s) do |event|
+      if @record_timestamp
+        event.set("@t_li", (Time.now.to_f.round(3)*1000).to_i)
+      end
       decorate(event)
       maybe_apply_schema(event, record)
       maybe_set_metadata(event, record)
+      ## convert ConsumerRecord.headers to fields
+      if @record_headers
+        @record_headers.each do |headerKey,type|
+          header = record.headers.lastHeader(headerKey)
+          if !header.nil?
+            value = ""
+            header.value.map do |b|
+              value += b.chr
+            end
+            if type === "integer"
+              event.set(headerKey, value.to_i)
+            else
+              event.set(headerKey, value)
+            end
+          end
+        end
+      end
       queue << event
     end
   end
